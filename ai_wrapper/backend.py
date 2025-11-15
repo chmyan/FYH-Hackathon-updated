@@ -1,14 +1,20 @@
 #plan
-import pydantic
-import numpy as np
-from typing import Union, Optional
-from openai import OpenAI
-from utils import *
-from dataclasses import dataclass
-import PIL
+import os
 import time
-import numpy as np
 import json
+from dataclasses import dataclass
+from typing import Optional
+
+import numpy as np
+import PIL
+from openai import OpenAI
+
+from utils import (
+    b64_pdf_to_pil_images,
+    pil_image_to_jpeg_b64,
+    top_k_cosine_sim,
+    webm_b64_to_mp4_b64,
+)
 
 class IndivisibleContent():
     pass
@@ -30,13 +36,21 @@ class FullMaterial:
     contents: list[IndivisibleMaterial]
 
 
-def get_lecture_notes(relevant_transcriptions: list[str], model_kwargs: dict, openrouter_api_key: str) -> str:
+def get_lecture_notes(
+    relevant_transcriptions: list[str],
+    model_kwargs: dict,
+    openrouter_api_key: str,
+) -> str:
     client = OpenAI(
         base_url = "https://openrouter.ai/api/v1",
         api_key = openrouter_api_key.strip()
     )
-    prompt = f"Here is a list of relevant transcriptions from a set of lectures\n{(relevant_transcriptions)}\nGenerate a well organised lecture note including all of the topics present on the transcriptions"
-    print(prompt)
+    prompt = (
+        "Here is a list of relevant transcriptions from a set of lectures\n"
+        f"{relevant_transcriptions}\n"
+        "Generate a well organised lecture note including all of the topics present"
+        " on the transcriptions"
+    )
     return client.chat.completions.create(
                 messages = [
                     {"role": "user", "content": prompt},
@@ -116,19 +130,44 @@ def handle_incoming_clips(video_b64: str, model_kwargs: dict, openrouter_api_key
     
 
 def generate_notes(query: str, model_kwargs: dict, openrouter_api_key: str) -> str:
+    transcription_dir = "transcriptions"
+    transcription_files = [
+        fn for fn in os.listdir(transcription_dir)
+        if fn.startswith("TS")
+    ]
 
-     all_transcriptions = [json.loads(open(f"transcriptions/{fn}", "r",errors="ignore").read()) for fn in os.listdir("transcriptions") if fn[:2]=="TS"]
-     all_transcriptions_text = [t["content"] for t in all_transcriptions]
+    all_transcriptions: list[dict[str, str]] = []
+    for filename in transcription_files:
+        path = os.path.join(transcription_dir, filename)
+        try:
+            with open(path, "r", errors="ignore") as handle:
+                loaded = json.loads(handle.read())
+                if isinstance(loaded, dict) and "content" in loaded:
+                    all_transcriptions.append(loaded)
+        except (OSError, json.JSONDecodeError):
+            continue
 
-     print('embedding full set')
-     full_embeddings = np.array([embed(t,openrouter_api_key) for t in all_transcriptions_text])
-     print(full_embeddings)
-     print('embedding query')
-     top_indices, top_vals = top_k_cosine_sim(embed(query, openrouter_api_key),full_embeddings, k=3)
-     print(f"top indices {top_indices}")
-     filtered_transcriptions = [all_transcriptions[i] for i in top_indices]
-     
-     return get_lecture_notes(filtered_transcriptions, model_kwargs, openrouter_api_key)
+    if not all_transcriptions:
+        raise ValueError("No transcriptions available to generate notes.")
+
+    all_transcriptions_text = [t["content"] for t in all_transcriptions]
+
+    print('embedding full set')
+    full_embeddings = np.array([
+        embed(text, openrouter_api_key)
+        for text in all_transcriptions_text
+    ])
+    print(full_embeddings)
+    print('embedding query')
+    query_embedding = embed(query, openrouter_api_key)
+    top_indices, _ = top_k_cosine_sim(query_embedding, full_embeddings, k=3)
+    print(f"top indices {top_indices}")
+    filtered_transcriptions = [
+        all_transcriptions_text[i]
+        for i in top_indices
+    ]
+
+    return get_lecture_notes(filtered_transcriptions, model_kwargs, openrouter_api_key)
 
 
 if __name__ == "__main__":

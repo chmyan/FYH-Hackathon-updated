@@ -1,3 +1,5 @@
+const API_BASE_URL = "http://139.84.201.117:8000";
+
 let currentStreamId: string | null = null;
 let currentTabUrl: string = 'unknown';
 
@@ -86,24 +88,25 @@ async function handleStop() {
 
     // ======== Request generated notes from server ========
     try {
-        const FLASK_SERVER_URL = "http://139.84.201.117:8000/generate_notes"; // Hardcoded server endpoint
+        const endpoint = `${API_BASE_URL}/generate_notes`;
 
         // Load user settings from storage
         const { apiKey, model } = await chrome.storage.local.get(["apiKey", "model"]);
-        const MODEL_KWARGS = { model: model };
-        const OPENROUTER_API_KEY = apiKey;
+        const modelKwargs = { model };
+        const openrouterApiKey = apiKey;
 
-        // Example query string
-        const query = "Summarize the recorded video into notes.";
+        if (!openrouterApiKey || !modelKwargs.model) {
+            throw new Error('Missing OpenRouter settings in local storage.');
+        }
 
         const payload = {
-            query,
-            model_kwargs: MODEL_KWARGS,
-            openrouter_api_key: OPENROUTER_API_KEY
+            query: "Summarize the recorded video into notes.",
+            model_kwargs: modelKwargs,
+            openrouter_api_key: openrouterApiKey
         };
 
-        console.log('Posting query to generate_notes endpoint...');
-        const response = await fetch(FLASK_SERVER_URL, {
+        console.log('Posting query to generate_notes endpoint...', endpoint);
+        const response = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -111,10 +114,13 @@ async function handleStop() {
 
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
 
-        const textOutput = await response.text(); // Expecting plain text or markdown string
+        const data: { result?: string } = await response.json();
+        if (!data.result) {
+            throw new Error('Backend response missing "result" field.');
+        }
 
         // Convert to Blob and download
-        const blob = new Blob([textOutput], { type: 'text/markdown' });
+        const blob = new Blob([data.result], { type: 'text/markdown' });
         const url = URL.createObjectURL(blob);
 
         chrome.downloads.download({
@@ -146,9 +152,14 @@ async function postChunkToBackend(base64: string, filename: string) {
         "apiKey",
         "model"
     ]);
-    const FLASK_SERVER_URL = "http://139.84.201.117:8000/upload_video_clip";
+    const endpoint = `${API_BASE_URL}/upload_video_clip`;
     const API_KEY = apiKey;
-    const MODEL_KWARGS = { model: model};
+    const MODEL_KWARGS = { model };
+
+    if (!API_KEY || !MODEL_KWARGS.model) {
+        console.warn('Skipping upload: missing OpenRouter settings.');
+        return;
+    }
 
     const payload = {
         video_base64: base64,
@@ -162,9 +173,9 @@ async function postChunkToBackend(base64: string, filename: string) {
     };
 
     try {
-        console.log('Posting chunk to backend:', FLASK_SERVER_URL);
+        console.log('Posting chunk to backend:', endpoint);
 
-        const response = await fetch(FLASK_SERVER_URL, {
+        const response = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -172,7 +183,8 @@ async function postChunkToBackend(base64: string, filename: string) {
 
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
 
-        console.log("Backend:", await response.json());
+        const data: { result?: unknown } = await response.json();
+        console.log("Backend:", data);
     } catch (err) {
         console.error("Failed to post:", err);
     }

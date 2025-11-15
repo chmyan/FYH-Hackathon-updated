@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Tab Transcriber",
+  "version": "0.1.0",
+  "description": "Captures tab audio and produces a transcript.",
+  "action": {
+    "default_popup": "src/popup/index.html",
+    "default_title": "Transcriber"
+  },
+  "permissions": ["activeTab", "downloads", "storage", "tabCapture", "offscreen"],
+  "optional_permissions": ["tabCapture"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  }
+}

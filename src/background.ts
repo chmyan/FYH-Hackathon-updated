@@ -75,7 +75,7 @@ async function handleStop() {
     console.log('Background: Stopping capture');
     currentStreamId = null;
 
-    // Ensure offscreen exists
+    // Tell offscreen to stop recording
     const existingContexts = await chrome.runtime.getContexts({
         contextTypes: ['OFFSCREEN_DOCUMENT']
     });
@@ -83,7 +83,53 @@ async function handleStop() {
     if (existingContexts.length > 0) {
         chrome.runtime.sendMessage({ type: 'stop-recording' });
     }
+
+    // ======== Request generated notes from server ========
+    try {
+        const FLASK_SERVER_URL = "http://139.84.201.117:8000/generate_notes"; // Hardcoded server endpoint
+
+        // Load user settings from storage
+        const { apiKey, model } = await chrome.storage.local.get(["apiKey", "model"]);
+        const MODEL_KWARGS = { model: model };
+        const OPENROUTER_API_KEY = apiKey;
+
+        // Example query string
+        const query = "Summarize the recorded video into notes.";
+
+        const payload = {
+            query,
+            model_kwargs: MODEL_KWARGS,
+            openrouter_api_key: OPENROUTER_API_KEY
+        };
+
+        console.log('Posting query to generate_notes endpoint...');
+        const response = await fetch(FLASK_SERVER_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+
+        const textOutput = await response.text(); // Expecting plain text or markdown string
+
+        // Convert to Blob and download
+        const blob = new Blob([textOutput], { type: 'text/markdown' });
+        const url = URL.createObjectURL(blob);
+
+        chrome.downloads.download({
+            url,
+            filename: `notes_${Date.now()}.md`,
+            saveAs: true
+        });
+
+        console.log('Markdown notes downloaded!');
+    } catch (err) {
+        console.error('Failed to generate notes:', err);
+    }
 }
+
+
 
 function handleChunkDownload(base64: string, filename: string) {
     console.log('Background: Chunk received:', filename);
@@ -94,15 +140,15 @@ function handleChunkDownload(base64: string, filename: string) {
 }
 
 async function postChunkToBackend(base64: string, filename: string) {
-    // ===== CONFIGURATION - UPDATE THESE =====
-    const FLASK_SERVER_URL = 'http://10.70.121.198:8000/upload_video_clip'; // Your Flask endpoint
-    const API_KEY = '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'; // Your API key
-    const MODEL_KWARGS = {
-        model: 'google/gemini-2.5-flash',
 
-        // Add other model parameters here
-    };
-    // ========================================
+    // Load user settings from storage
+    const { apiKey, model } = await chrome.storage.local.get([
+        "apiKey",
+        "model"
+    ]);
+    const FLASK_SERVER_URL = "http://139.84.201.117:8000/upload_video_clip";
+    const API_KEY = apiKey;
+    const MODEL_KWARGS = { model: model};
 
     const payload = {
         video_base64: base64,
@@ -117,22 +163,17 @@ async function postChunkToBackend(base64: string, filename: string) {
 
     try {
         console.log('Posting chunk to backend:', FLASK_SERVER_URL);
-        console.log(base64)
+
         const response = await fetch(FLASK_SERVER_URL, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
 
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
 
-        const result = await response.json();
-        console.log('Backend response:', result);
-    } catch (error) {
-        console.error('Failed to post chunk to backend:', error);
+        console.log("Backend:", await response.json());
+    } catch (err) {
+        console.error("Failed to post:", err);
     }
 }

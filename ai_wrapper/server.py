@@ -13,6 +13,7 @@ class VideoClipPayload(BaseModel):
     video_base64: str
     model_kwargs: Dict[str, Any]
     openrouter_api_key: str
+    metadata: Dict[str, Any]
 
 
 class NotesPayload(BaseModel):

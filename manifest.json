@@ -1,24 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "AI Screen Recorder & Tab Transcriber",
-  "version": "1.0",
-  "description": "Captures tab audio/video, produces transcripts, and generates notes.",
+  "name": "Tab Transcriber",
+  "version": "0.1.0",
+  "description": "Captures tab audio and produces a transcript.",
   "action": {
     "default_popup": "src/popup/index.html",
-    "default_title": "AI Recorder & Transcriber"
+    "default_title": "Transcriber"
   },
-  "permissions": [
-    "activeTab",
-    "downloads",
-    "storage",
-    "tabCapture"
-  ],
-  "optional_permissions": [
-    "tabCapture"
-  ],
-  "host_permissions": [
-    "<all_urls>"
-  ],
+  "permissions": ["activeTab", "downloads", "storage", "tabCapture", "offscreen"],
+  "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"
   }

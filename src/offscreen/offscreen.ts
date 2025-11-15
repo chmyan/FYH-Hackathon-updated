@@ -1,119 +1,150 @@
 console.log('Offscreen script loaded and ready');
 
-let mediaRecorder: MediaRecorder | null = null;
-let isRecording = false;
+let currentStream: MediaStream | null = null;
+let recordingLoop: boolean = false;
 
-// Listen for messages from popup or background
-chrome.runtime.onMessage.addListener((msg, sender) => {
-    console.log('Offscreen received message:', msg, 'from:', sender);
+chrome.runtime.onMessage.addListener((msg) => {
+    console.log('Offscreen received message:', msg);
 
-    if (msg.type === 'start') {
-        console.log('Processing START message');
-        startCapture();
-    } else if (msg.type === 'stop') {
-        console.log('Processing STOP message');
-        stopCapture();
+    if (msg.type === 'start-recording') {
+        console.log('Processing START-RECORDING message with streamId:', msg.streamId);
+        startRecordingLoop(msg.streamId);
+    } else if (msg.type === 'stop-recording') {
+        console.log('Processing STOP-RECORDING message');
+        stopRecordingLoop();
     }
 });
 
-async function startCapture() {
-    console.log('startCapture() called, isRecording:', isRecording);
+async function startRecordingLoop(streamId: string) {
+    console.log('startRecordingLoop() called with streamId:', streamId);
 
-    if (isRecording) {
+    if (recordingLoop) {
         console.log('Already recording, skipping');
         return;
     }
-    isRecording = true;
-
-    console.log('Offscreen: starting tab video+audio capture');
+    recordingLoop = true;
 
     try {
-        const stream: MediaStream = await new Promise((resolve, reject) => {
-            console.log('Calling chrome.tabCapture.capture...');
-            try {
-                chrome.tabCapture.capture({ audio: true, video: true }, (s) => {
-                    console.log('tabCapture callback, stream:', s);
-                    if (!s) {
-                        const err = chrome.runtime.lastError?.message || 'tabCapture failed';
-                        console.error('tabCapture error:', err);
-                        reject(new Error(err));
-                    } else {
-                        console.log('Stream obtained successfully');
-                        resolve(s);
-                    }
-                });
-            } catch (e) {
-                console.error('tabCapture exception:', e);
-                reject(e);
-            }
+        // Get the stream using the streamId from background
+        console.log('Getting user media with streamId...');
+        currentStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                mandatory: {
+                    chromeMediaSource: 'tab',
+                    chromeMediaSourceId: streamId
+                }
+            } as any,
+            video: {
+                mandatory: {
+                    chromeMediaSource: 'tab',
+                    chromeMediaSourceId: streamId
+                }
+            } as any
         });
 
-        console.log('Creating MediaRecorder...');
-        mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp8,opus' });
+        console.log('Stream obtained, tracks:', currentStream.getTracks().length);
 
-        mediaRecorder.ondataavailable = async (event) => {
-            console.log('ondataavailable fired');
+        // Start the recording loop
+        while (recordingLoop) {
+            await recordSingleChunk();
+        }
+
+        console.log('Recording loop ended');
+    } catch (err) {
+        console.error('Failed to start recording:', err);
+        recordingLoop = false;
+    }
+}
+
+async function recordSingleChunk(): Promise<void> {
+    if (!currentStream) {
+        console.error('No stream available for recording');
+        return;
+    }
+
+    return new Promise<void>((resolve, reject) => {
+        console.log('Starting new 5-second chunk recording...');
+
+        const mediaRecorder = new MediaRecorder(currentStream!, {
+            mimeType: 'video/webm; codecs=vp8,opus'
+        });
+
+        const chunks: Blob[] = [];
+
+        mediaRecorder.ondataavailable = (event) => {
             if (event.data && event.data.size > 0) {
-                console.log('New chunk captured, size:', event.data.size, 'bytes');
-
-                // Convert blob to base64
-                const base64Chunk = await blobToBase64(event.data);
-                console.log('Converted to base64, length:', base64Chunk.length);
-
-                // "Upload" or store — here we save it using Chrome downloads for testing
-                const filename = `chunk_${Date.now()}.txt`;
-                chrome.downloads.download({
-                    url: `data:text/plain;base64,${base64Chunk}`,
-                    filename: filename,
-                    conflictAction: 'uniquify'
-                }, (downloadId) => {
-                    if (chrome.runtime.lastError) {
-                        console.error('Download error:', chrome.runtime.lastError);
-                    } else {
-                        console.log('Saved chunk as file:', filename, 'downloadId:', downloadId);
-                    }
-                });
-            } else {
-                console.log('ondataavailable: no data or size is 0');
+                console.log('Data chunk received, size:', event.data.size, 'bytes');
+                chunks.push(event.data);
             }
         };
 
-        mediaRecorder.onstop = () => {
-            console.log('Offscreen: mediaRecorder stopped');
-            stream.getTracks().forEach((t) => t.stop());
-            isRecording = false;
-            chrome.runtime.sendMessage({ type: 'recording-finished' });
+        mediaRecorder.onstop = async () => {
+            console.log('Chunk recording stopped, collected', chunks.length, 'blob(s)');
+
+            if (chunks.length > 0) {
+                // Combine all blobs into one complete video
+                const completeBlob = new Blob(chunks, { type: 'video/webm' });
+                console.log('Complete chunk size:', completeBlob.size, 'bytes');
+
+                const base64Chunk = await blobToBase64(completeBlob);
+                console.log('Converted to base64, length:', base64Chunk.length);
+
+                const filename = `chunk_${Date.now()}.webm`;
+                chrome.runtime.sendMessage({
+                    type: 'save-chunk',
+                    base64: base64Chunk,
+                    filename: filename
+                });
+                console.log('Sent chunk to background:', filename);
+            }
+
+            resolve();
         };
 
         mediaRecorder.onerror = (e) => {
             console.error('MediaRecorder error:', e);
+            reject(e);
         };
 
-        const TIMESLICE = 5000; // 5 seconds
+        // Start recording with 5-second timeslice
+        const TIMESLICE = 5000;
         mediaRecorder.start(TIMESLICE);
-        console.log('Offscreen: MediaRecorder started, chunk size ~5s, state:', mediaRecorder.state);
-    } catch (err) {
-        console.error('Failed to start capture:', err);
-        isRecording = false;
-    }
+        console.log('Chunk recorder started, will stop after 5 seconds');
+
+        // Stop after 5 seconds
+        setTimeout(() => {
+            if (mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+            }
+        }, TIMESLICE);
+    });
 }
 
-function stopCapture() {
-    console.log('stopCapture() called, mediaRecorder state:', mediaRecorder?.state);
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-        console.log('Offscreen: stopping recording...');
-        mediaRecorder.stop();
+function stopRecordingLoop() {
+    console.log('stopRecordingLoop() called');
+
+    // Stop the loop
+    recordingLoop = false;
+
+    // Stop the stream
+    if (currentStream) {
+        currentStream.getTracks().forEach((t) => t.stop());
+        currentStream = null;
+        console.log('Stream tracks stopped');
     }
-    isRecording = false;
+    chrome.runtime.sendMessage({ type: 'recording-finished' });
 }
 
-// Helper: Convert Blob to Base64 string
 function blobToBase64(blob: Blob): Promise<string> {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onloadend = () => {
             const dataUrl = reader.result as string;
-            const base64 = dataUrl.split(',')[1];
+            // Split on the LAST comma to get actual base64 data
+            // Format: data:video/webm;codecs=vp8,opus;base64,ACTUALDATA
+            const base64Index = dataUrl.lastIndexOf(',');
+            const base64 = dataUrl.substring(base64Index + 1);
+            console.log('Blob to base64 conversion complete, length:', base64.length);
             resolve(base64);
         };
         reader.onerror = reject;
